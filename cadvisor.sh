@@ -80,20 +80,22 @@ get_network_interfaces() {
     
     # Try ip addr show first (modern systems)
     if command -v ip >/dev/null 2>&1; then
+        # Use a more direct approach with ip command
+        local ip_output=$(ip addr show | grep -E "inet [0-9]" | grep -v "127.0.0.1" | grep -v "::1")
+        
         while IFS= read -r line; do
-            # Check if this is an interface line (starts with a number)
-            if [[ "$line" =~ ^[0-9]+: ]]; then
-                current_iface=$(echo "$line" | awk '{print $2}' | sed 's/://')
-            # Check if this is an inet line with an IP (not inet6) - handle indented lines
-            elif [[ "$line" =~ ^[[:space:]]+inet[[:space:]]+[0-9] ]]; then
-                local ip=$(echo "$line" | awk '{print $2}' | cut -d'/' -f1)
-                if [[ -n "$ip" && "$ip" != "127.0.0.1" && "$ip" != "::1" && -n "$current_iface" ]]; then
-                    echo "$iface_num) $current_iface ($ip)"
-                    interfaces+=("$ip")
-                    ((iface_num++))
-                fi
+            # Extract IP from the line
+            local ip=$(echo "$line" | awk '{print $2}' | cut -d'/' -f1)
+            # Get the interface name by looking at the context
+            local iface_line=$(ip addr show | grep -B1 "$ip" | head -1)
+            local iface=$(echo "$iface_line" | awk '{print $2}' | sed 's/://')
+            
+            if [[ -n "$ip" && -n "$iface" ]]; then
+                echo "$iface_num) $iface ($ip)"
+                interfaces+=("$ip")
+                ((iface_num++))
             fi
-        done < <(ip addr show)
+        done <<< "$ip_output"
     # Fallback to ifconfig if ip command is not available
     elif command -v ifconfig >/dev/null 2>&1; then
         while IFS= read -r line; do
