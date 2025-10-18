@@ -57,7 +57,7 @@ check_docker() {
 
 # Function to get available network interfaces
 get_network_interfaces() {
-    print_status "Available network interfaces:"
+    print_status "Detecting available network interfaces..."
     echo
     
     # Get all network interfaces with their IPs
@@ -76,15 +76,48 @@ get_network_interfaces() {
     
     # Get specific network interfaces
     local iface_num=3
-    while IFS= read -r line; do
-        local iface=$(echo "$line" | awk '{print $1}' | sed 's/://')
-        local ip=$(echo "$line" | awk '{print $2}')
-        if [[ -n "$ip" && "$ip" != "127.0.0.1" && "$ip" != "::1" ]]; then
-            echo "$iface_num) $iface ($ip)"
-            interfaces+=("$ip")
-            ((iface_num++))
-        fi
-    done < <(ip addr show | grep -E "inet [0-9]" | grep -v "127.0.0.1" | grep -v "::1")
+    local current_iface=""
+    
+    # Try ip addr show first (modern systems)
+    if command -v ip >/dev/null 2>&1; then
+        while IFS= read -r line; do
+            # Check if this is an interface line (starts with a number)
+            if [[ "$line" =~ ^[0-9]+: ]]; then
+                current_iface=$(echo "$line" | awk '{print $2}' | sed 's/://')
+            # Check if this is an inet line with an IP (not inet6) - handle indented lines
+            elif [[ "$line" =~ ^[[:space:]]+inet[[:space:]]+[0-9] ]]; then
+                local ip=$(echo "$line" | awk '{print $2}' | cut -d'/' -f1)
+                if [[ -n "$ip" && "$ip" != "127.0.0.1" && "$ip" != "::1" && -n "$current_iface" ]]; then
+                    echo "$iface_num) $current_iface ($ip)"
+                    interfaces+=("$ip")
+                    ((iface_num++))
+                fi
+            fi
+        done < <(ip addr show)
+    # Fallback to ifconfig if ip command is not available
+    elif command -v ifconfig >/dev/null 2>&1; then
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^[a-zA-Z0-9]+: ]]; then
+                current_iface=$(echo "$line" | awk '{print $1}' | sed 's/://')
+            elif [[ "$line" =~ inet[[:space:]]+[0-9] ]]; then
+                local ip=$(echo "$line" | awk '{print $2}')
+                if [[ -n "$ip" && "$ip" != "127.0.0.1" && "$ip" != "::1" && -n "$current_iface" ]]; then
+                    echo "$iface_num) $current_iface ($ip)"
+                    interfaces+=("$ip")
+                    ((iface_num++))
+                fi
+            fi
+        done < <(ifconfig)
+    else
+        print_warning "Neither 'ip' nor 'ifconfig' command found. Only showing localhost and all interfaces options."
+    fi
+    
+    # Show summary of detected interfaces
+    if [[ ${#interfaces[@]} -gt 2 ]]; then
+        print_success "Found ${#interfaces[@]} network interfaces"
+    else
+        print_warning "Only basic interface options available (localhost and all interfaces)"
+    fi
     
     echo
     read -p "Choose interface to bind metrics to (1-$iface_num): " choice
