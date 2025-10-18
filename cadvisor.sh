@@ -16,6 +16,7 @@ NC='\033[0m' # No Color
 # Configuration
 CADVISOR_PORT=8080
 CADVISOR_CONTAINER_NAME="cadvisor"
+CADVISOR_BIND_IP="0.0.0.0"  # Change this to specific IP if needed (e.g., "127.0.0.1" for localhost only)
 
 # Grafana configuration variables
 GRAFANA_URL=""
@@ -55,121 +56,11 @@ check_docker() {
     print_success "Docker is running"
 }
 
-# Function to display available network interfaces
-display_network_interfaces() {
-    print_status "Detecting available network interfaces..."
-    echo
-    
-    # Get all network interfaces with their IPs
-    local interfaces=()
-    local interface_count=0
-    
-    # Add localhost option
-    echo "1) localhost (127.0.0.1) - Local access only"
-    interfaces+=("127.0.0.1")
-    interface_count=1
-    
-    # Add all interfaces option
-    echo "2) all interfaces (0.0.0.0) - External access"
-    interfaces+=("0.0.0.0")
-    interface_count=2
-    
-    # Get specific network interfaces
-    local iface_num=3
-    local current_iface=""
-    
-    # Try ip addr show first (modern systems)
-    if command -v ip >/dev/null 2>&1; then
-        # Parse ip addr show output properly
-        local current_iface=""
-        while IFS= read -r line; do
-            # Check if this is an interface line (starts with a number)
-            if [[ "$line" =~ ^[0-9]+: ]]; then
-                current_iface=$(echo "$line" | awk '{print $2}' | sed 's/://')
-            # Check if this is an inet line with an IP (not inet6)
-            elif [[ "$line" =~ ^[[:space:]]+inet[[:space:]]+[0-9] ]]; then
-                local ip=$(echo "$line" | awk '{print $2}' | cut -d'/' -f1)
-                if [[ -n "$ip" && "$ip" != "127.0.0.1" && "$ip" != "::1" && -n "$current_iface" ]]; then
-                    echo "$iface_num) $current_iface ($ip)"
-                    interfaces+=("$ip")
-                    ((iface_num++))
-                fi
-            fi
-        done < <(ip addr show)
-    # Fallback to ifconfig if ip command is not available
-    elif command -v ifconfig >/dev/null 2>&1; then
-        while IFS= read -r line; do
-            if [[ "$line" =~ ^[a-zA-Z0-9]+: ]]; then
-                current_iface=$(echo "$line" | awk '{print $1}' | sed 's/://')
-            elif [[ "$line" =~ inet[[:space:]]+[0-9] ]]; then
-                local ip=$(echo "$line" | awk '{print $2}')
-                if [[ -n "$ip" && "$ip" != "127.0.0.1" && "$ip" != "::1" && -n "$current_iface" ]]; then
-                    echo "$iface_num) $current_iface ($ip)"
-                    interfaces+=("$ip")
-                    ((iface_num++))
-                fi
-            fi
-        done < <(ifconfig)
-    else
-        print_warning "Neither 'ip' nor 'ifconfig' command found. Only showing localhost and all interfaces options."
-    fi
-    
-    # Show summary of detected interfaces
-    if [[ ${#interfaces[@]} -gt 2 ]]; then
-        print_success "Found ${#interfaces[@]} network interfaces"
-    else
-        print_warning "Only basic interface options available (localhost and all interfaces)"
-    fi
-    
-    echo
-    return $iface_num
-}
-
-# Function to get user's interface choice
-get_network_interfaces() {
-    local iface_num=$1
-    read -p "Choose interface to bind metrics to (1-$iface_num): " choice
-    
-    # Validate choice
-    if [[ "$choice" -ge 1 && "$choice" -le "$iface_num" ]]; then
-        # Get the selected IP from the interfaces array
-        local interfaces=("127.0.0.1" "0.0.0.0")
-        
-        # Add detected interfaces
-        if command -v ip >/dev/null 2>&1; then
-            local current_iface=""
-            while IFS= read -r line; do
-                if [[ "$line" =~ ^[0-9]+: ]]; then
-                    current_iface=$(echo "$line" | awk '{print $2}' | sed 's/://')
-                elif [[ "$line" =~ ^[[:space:]]+inet[[:space:]]+[0-9] ]]; then
-                    local ip=$(echo "$line" | awk '{print $2}' | cut -d'/' -f1)
-                    if [[ -n "$ip" && "$ip" != "127.0.0.1" && "$ip" != "::1" && -n "$current_iface" ]]; then
-                        interfaces+=("$ip")
-                    fi
-                fi
-            done < <(ip addr show)
-        fi
-        
-        local selected_ip="${interfaces[$((choice-1))]}"
-        echo "$selected_ip"
-    else
-        print_error "Invalid choice. Using localhost for security."
-        echo "127.0.0.1"
-    fi
-}
 
 # Function to deploy cAdvisor container
 deploy_cadvisor() {
     print_status "Deploying cAdvisor for detailed container monitoring..."
-    
-    # Display interfaces and get count
-    display_network_interfaces
-    local iface_count=$?
-    
-    # Let user choose interface
-    local selected_ip=$(get_network_interfaces $iface_count)
-    
-    print_status "Selected interface: $selected_ip"
+    print_status "Binding to: $CADVISOR_BIND_IP:$CADVISOR_PORT"
     
     # Stop and remove existing cAdvisor container if it exists
     docker stop "$CADVISOR_CONTAINER_NAME" 2>/dev/null || true
@@ -181,7 +72,7 @@ deploy_cadvisor() {
         --restart unless-stopped \
         --privileged \
         --device /dev/kmsg \
-        -p "$selected_ip:$CADVISOR_PORT:8080" \
+        -p "$CADVISOR_BIND_IP:$CADVISOR_PORT:8080" \
         -v /:/rootfs:ro \
         -v /var/run:/var/run:ro \
         -v /sys:/sys:ro \
@@ -190,8 +81,8 @@ deploy_cadvisor() {
         gcr.io/cadvisor/cadvisor:latest
     
     print_success "cAdvisor deployed successfully"
-    print_warning "cAdvisor metrics are now available at: http://$selected_ip:$CADVISOR_PORT/metrics"
-    print_warning "cAdvisor web UI is available at: http://$selected_ip:$CADVISOR_PORT"
+    print_warning "cAdvisor metrics are now available at: http://$CADVISOR_BIND_IP:$CADVISOR_PORT/metrics"
+    print_warning "cAdvisor web UI is available at: http://$CADVISOR_BIND_IP:$CADVISOR_PORT"
 }
 
 # Function to display connection information
@@ -209,9 +100,9 @@ display_connection_info() {
     fi
     
     print_status "Connection Information:"
-    echo "  📊 Metrics Endpoint: http://$container_ip:$container_port/metrics"
-    echo "  🌐 cAdvisor Web UI: http://$container_ip:$container_port"
-    echo "  🔍 Local Access: http://localhost:$container_port"
+    echo "  📊 Metrics Endpoint: http://$CADVISOR_BIND_IP:$CADVISOR_PORT/metrics"
+    echo "  🌐 cAdvisor Web UI: http://$CADVISOR_BIND_IP:$CADVISOR_PORT"
+    echo "  🔍 Local Access: http://localhost:$CADVISOR_PORT"
     echo
     
     if [[ -n "$GRAFANA_URL" ]]; then
@@ -327,9 +218,9 @@ create_grafana_datasource() {
         auth_header="Authorization: Basic $(echo -n "$GRAFANA_USERNAME:$GRAFANA_PASSWORD" | base64)"
     fi
     
-    # Get the cAdvisor container's bound IP
-    local server_ip=$(docker port "$CADVISOR_CONTAINER_NAME" 8080 2>/dev/null | cut -d':' -f1 | head -1)
-    if [[ -z "$server_ip" || "$server_ip" == "0.0.0.0" ]]; then
+    # Use the configured bind IP
+    local server_ip="$CADVISOR_BIND_IP"
+    if [[ "$server_ip" == "0.0.0.0" ]]; then
         # If bound to all interfaces, get the actual server IP
         server_ip=$(hostname -I | awk '{print $1}' 2>/dev/null || echo "localhost")
     fi
