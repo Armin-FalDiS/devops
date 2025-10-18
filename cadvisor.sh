@@ -55,8 +55,8 @@ check_docker() {
     print_success "Docker is running"
 }
 
-# Function to get available network interfaces
-get_network_interfaces() {
+# Function to display available network interfaces
+display_network_interfaces() {
     print_status "Detecting available network interfaces..."
     echo
     
@@ -80,22 +80,22 @@ get_network_interfaces() {
     
     # Try ip addr show first (modern systems)
     if command -v ip >/dev/null 2>&1; then
-        # Use a more direct approach with ip command
-        local ip_output=$(ip addr show | grep -E "inet [0-9]" | grep -v "127.0.0.1" | grep -v "::1")
-        
+        # Parse ip addr show output properly
+        local current_iface=""
         while IFS= read -r line; do
-            # Extract IP from the line
-            local ip=$(echo "$line" | awk '{print $2}' | cut -d'/' -f1)
-            # Get the interface name by looking at the context
-            local iface_line=$(ip addr show | grep -B1 "$ip" | head -1)
-            local iface=$(echo "$iface_line" | awk '{print $2}' | sed 's/://')
-            
-            if [[ -n "$ip" && -n "$iface" ]]; then
-                echo "$iface_num) $iface ($ip)"
-                interfaces+=("$ip")
-                ((iface_num++))
+            # Check if this is an interface line (starts with a number)
+            if [[ "$line" =~ ^[0-9]+: ]]; then
+                current_iface=$(echo "$line" | awk '{print $2}' | sed 's/://')
+            # Check if this is an inet line with an IP (not inet6)
+            elif [[ "$line" =~ ^[[:space:]]+inet[[:space:]]+[0-9] ]]; then
+                local ip=$(echo "$line" | awk '{print $2}' | cut -d'/' -f1)
+                if [[ -n "$ip" && "$ip" != "127.0.0.1" && "$ip" != "::1" && -n "$current_iface" ]]; then
+                    echo "$iface_num) $current_iface ($ip)"
+                    interfaces+=("$ip")
+                    ((iface_num++))
+                fi
             fi
-        done <<< "$ip_output"
+        done < <(ip addr show)
     # Fallback to ifconfig if ip command is not available
     elif command -v ifconfig >/dev/null 2>&1; then
         while IFS= read -r line; do
@@ -122,10 +122,34 @@ get_network_interfaces() {
     fi
     
     echo
+    return $iface_num
+}
+
+# Function to get user's interface choice
+get_network_interfaces() {
+    local iface_num=$1
     read -p "Choose interface to bind metrics to (1-$iface_num): " choice
     
     # Validate choice
     if [[ "$choice" -ge 1 && "$choice" -le "$iface_num" ]]; then
+        # Get the selected IP from the interfaces array
+        local interfaces=("127.0.0.1" "0.0.0.0")
+        
+        # Add detected interfaces
+        if command -v ip >/dev/null 2>&1; then
+            local current_iface=""
+            while IFS= read -r line; do
+                if [[ "$line" =~ ^[0-9]+: ]]; then
+                    current_iface=$(echo "$line" | awk '{print $2}' | sed 's/://')
+                elif [[ "$line" =~ ^[[:space:]]+inet[[:space:]]+[0-9] ]]; then
+                    local ip=$(echo "$line" | awk '{print $2}' | cut -d'/' -f1)
+                    if [[ -n "$ip" && "$ip" != "127.0.0.1" && "$ip" != "::1" && -n "$current_iface" ]]; then
+                        interfaces+=("$ip")
+                    fi
+                fi
+            done < <(ip addr show)
+        fi
+        
         local selected_ip="${interfaces[$((choice-1))]}"
         echo "$selected_ip"
     else
@@ -138,8 +162,12 @@ get_network_interfaces() {
 deploy_cadvisor() {
     print_status "Deploying cAdvisor for detailed container monitoring..."
     
+    # Display interfaces and get count
+    display_network_interfaces
+    local iface_count=$?
+    
     # Let user choose interface
-    local selected_ip=$(get_network_interfaces)
+    local selected_ip=$(get_network_interfaces $iface_count)
     
     print_status "Selected interface: $selected_ip"
     
